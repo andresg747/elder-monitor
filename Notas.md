@@ -21,4 +21,7 @@ Al pulsar el botón:
 Creadas rutinas que se ejecutarán cada 15 seg y 60 seg respectivamente.
 Para actualizar de manera constante Localización, Batería y (posteriormente) BPM.
 
-Tomar en cuenta: GPS Margen de error +- 40mts (malas condiciones);
+### 10/12 11:30am
+Agregado nuevo flag para enviar un único mensaje de alerta si el GPS no está disponible en ese instante. El mensaje invita al supervisor a revisar la última localización disponible en io.adafruit.com/andresg747/feeds/location
+
+Se hicieron pruebas exitosas con función botón de pánico.
