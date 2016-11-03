@@ -1,6 +1,5 @@
-// Tesis 8 Oct
+// Trabajo de Grado
 // Andrés García
-// v0.1
 
 // Libraries
 #include <Adafruit_SleepyDog.h>
@@ -12,31 +11,35 @@
 // Variables
 const int ledPin = 6;
 int buttonPin = 7;
-// Para cálculo de tiempo, rutinas de 15 y 60 seg
-int current;  // Estado actual Botón Activo en Bajo
-long millis_held;
+int current;        // Estado del botón, activo en bajo
+long millis_held;   // Milisegundos transcurridos
 long secs_held;
 long prev_secs_held;
 byte previous = HIGH;
 unsigned long firstTime;
-
-int SOS_flag=0; // Por si se intentó enviar SOS y aún no se tiene GPSFIX o nó se pudo enviar para reintentarlo
+char replybuffer[30];
+byte SOS_flag=0; // Por si se intentó enviar SOS y aún no se tiene GPSFIX o nó se pudo enviar para reintentarlo
 int aux_Enviar_SMS = 0; // Por si ya se envió el primer mensaje diciendo que está disponible GPS
-char sendto[]="04245328127";
+char sendto[13]="+584245328127";
 uint16_t vbat;
 float latitude, longitude, speed_kph, heading, altitude;
-uint8_t readline(char *buff, uint8_t maxbuff, uint16_t timeout = 0);
+int smsnum; // Número de SMS en SIMCARD
+// Para lectura SMS comando
+char *numero;
+
 // Geofence
-const float maxDistance = 100;
-float homeLatitude;
-float homeLongitude;
+// const float maxDistance = 100;
+// float homeLatitude;
+// float homeLongitude;
 
 #define quinceSeg (1000UL * 15) // Base rutina c/15 Seg
 #define unMin (1000UL * 60)  // Base rutina c/1 min
+static unsigned long aux60 = 0 - unMin;
+static unsigned long aux15 = 0 - quinceSeg;
 
 // FONA pins
-#define FONA_RX              2   // FONA serial RX pin.
-#define FONA_TX              3   // FONA serial TX pin.
+#define FONA_RX              11   // FONA serial RX pin.
+#define FONA_TX              10   // FONA serial TX pin.
 #define FONA_RST             4   // FONA reset pin
 
 // FONA GPRS
@@ -48,21 +51,14 @@ float homeLongitude;
 #define AIO_SERVER           "io.adafruit.com" 
 #define AIO_SERVERPORT       1883
 #define AIO_USERNAME         "andresg747"
-#define AIO_KEY              "1486c6e39b2f43b88bfa1961028a6ae9"
+#define AIO_KEY              "534696f793e24e31b3b493ab709bf772"
 
-#define MAX_TX_FAILURES      3  // Maximum number of publish failures in a row before resetting the whole sketch.
+// #define MAX_TX_FAILURES      3  // Maximum number of publish failures in a row before resetting the whole sketch.
 
 // FONA instance & configuration
 SoftwareSerial fonaSS = SoftwareSerial(FONA_TX, FONA_RX);     // FONA software serial connection.
 Adafruit_FONA fona = Adafruit_FONA(FONA_RST);                 // FONA library connection.
 
-// MQTT
-const char MQTT_SERVER[] PROGMEM    = AIO_SERVER;
-const char MQTT_USERNAME[] PROGMEM  = AIO_USERNAME;
-const char MQTT_PASSWORD[] PROGMEM  = AIO_KEY;
-
-// Setup the FONA MQTT class by passing in the FONA class and MQTT server and login details.
-//Adafruit_MQTT_FONA mqtt(&fona, MQTT_SERVER, AIO_SERVERPORT, MQTT_USERNAME, MQTT_PASSWORD);
 Adafruit_MQTT_FONA mqtt(&fona, AIO_SERVER, AIO_SERVERPORT, AIO_USERNAME, AIO_KEY);
 
 uint8_t txFailures = 0; // Cuantos publish fallidos consecutivos han ocurrido 
@@ -75,6 +71,7 @@ void setup() {
 
   pinMode(ledPin, OUTPUT);
   digitalWrite(buttonPin, HIGH);  // Enciende PullUp 
+  digitalWrite(ledPin,LOW);
 
   //Inicializa Puerto Serial y Conexión Módulo
   Serial.begin(115200);
@@ -92,16 +89,20 @@ void setup() {
     delay(500);
   }
   fona.setGPRSNetworkSettings(F(FONA_APN));
-  delay(2000);
+  delay(1000);
   Serial.println(F("Dehabilita GPRS"));
   fona.enableGPRS(false);
-  delay(2000);
+  delay(1000);
   Serial.println(F("Habilita GPRS"));
-  if (!fona.enableGPRS(true)) {
-    halt(F("No se pudo conectar a la red de datos..."));
+  while (!fona.enableGPRS(true)) {
+    Serial.println(F("No se pudo conectar a la red de datos..."));
+    delay(1000);
+    Serial.println(F("Dehabilita GPRS"));
+    fona.enableGPRS(false);
+    delay(1000);
   }
   Serial.println(F("Conectado a la red de datos."));
-  delay(3000);
+  delay(1000);
 
   // Now make the MQTT connection.
   int8_t ret = mqtt.connect();
@@ -114,47 +115,110 @@ void setup() {
   // Initial GPS read
   bool gpsFix = fona.getGPS(&latitude, &longitude, &speed_kph, &heading, &altitude);
   // CASA -- 10.078431,-69.2805031
-  homeLatitude = 10.078431L;
-  homeLongitude = -69.2805031L;
-
-  // Use the watchdog to simplify retry logic and make things more robust.
-  // Enable this after FONA is intialized because FONA init takes about 8-9 seconds.
-  //Watchdog.enable(8000);
-  Watchdog.reset();
+  // homeLatitude = 10.078431L;
+  // homeLongitude = -69.2805031L;
 
   // Enable GPS.
   fona.enableGPS(true);
 
+  delay(500);
+
+  borrarSMS();
+  checkGPS();
 }
 
 void loop() {
-  MQTT_connect();
-
-  // Watchdog reset at start of loop--make sure everything below takes less than 8 seconds in normal operation!
-  Watchdog.reset();
+  //MQTT_connect();
 
   checkbutton();
 
-  static unsigned long aux60 = 0 - unMin;
-  static unsigned long aux15 = 0 - quinceSeg;
-
-
   if ((long)(millis() - aux60) >= unMin){
     aux60 += unMin;
-    // Cada 60 seg
-    //checkGPS();
-    //checkBattery();
+    // ++++++++  Cada 60 seg
+    
+    checkGPS();
+    checkBattery();
 
   }else if((long)(millis() - aux15) >= quinceSeg){
     aux15 += quinceSeg;
-    // Cada 15 seg
-    checkGPS();
-    checkBattery();
-    if(SOS_flag == 1){
-      sendSMS_SOS();
-    }
+    // ++++++++  Cada 15 seg
+    leerSMS();
+    //checkGPS();
+    //checkBattery();
   }
+
+  //Veriicamos flag para envío de SMS Alerta
+  if(SOS_flag == 1){
+    sendSMS_SOS();
+  }
+
   delay(10);
+}
+
+void leerSMS(){
+  smsnum = fona.getNumSMS();
+  if(smsnum > 0){
+    Serial.println(F("Nuevo Mensaje de Texto"));
+    uint8_t n = 1; 
+    while (true) {
+      uint16_t smslen;
+      char sender[13];
+
+      Serial.print(F("\n\rReading SMS #")); Serial.println(n);
+     uint8_t len = fona.readSMS(n, replybuffer, 250, &smslen); // pass in buffer and max len!
+     // if the length is zero, its a special case where the index number is higher
+     // so increase the max we'll look at!
+     if (len == 0) {
+      Serial.println(F("[empty slot]"));
+      n++;
+      continue;
+     }
+     if (! fona.getSMSSender(n, sender, sizeof(sender))) {
+       // failed to get the sender?
+      sender[0] = 0;
+     }
+     
+     Serial.print(F("***** SMS #")); Serial.print(n);
+     Serial.print(" ("); Serial.print(len); Serial.println(F(") bytes *****"));
+     Serial.println(replybuffer);
+     Serial.print(F("From: ")); Serial.println(sender);
+     Serial.println(F("*****"));
+
+     String mensaje = replybuffer;
+
+     // if (strcasecmp(replybuffer, ".STATUS") == 0) {
+     if (mensaje.substring(0, 7) == ".STATUS") {
+      if(sender == sendto)
+        Serial.println(F("Comando Aceptado."));
+      else
+        Serial.println(F("NO es supervisor."));
+       // Comando Status
+      Serial.println(F("/////////////////////"));
+      Serial.println(F("Solicita Status"));
+      aux_Enviar_SMS = 1;
+      sendSMS_STATUS();
+     }
+     // if (strcasecmp(replybuffer, ".NUMERO") == 0) {
+     if (mensaje.substring(0, 7) == ".NUMERO") {
+             // Comando Cambiar Número
+      if(sender == sendto)
+        Serial.println(F("Comando Aceptado."));
+      else
+        Serial.println(F("NO es supervisor."));
+
+      Serial.println(F("/////////////////////"));
+      Serial.println(F("Cambiar Numero a: "));
+      Serial.println(mensaje.substring(8,21));
+     }
+     
+     delay(3000);
+     break;
+   } 
+   borrarSMS(); 
+ }
+ Serial.print(F("Hay "));
+ Serial.print((smsnum));
+ Serial.println(F(" SMS's en la SIM CARD."));
 }
 
 void checkbutton(){
@@ -197,11 +261,11 @@ void sendSMS_SOS(){
   bool gpsFix = fona.getGPS(&latitude, &longitude, &speed_kph, &heading, &altitude);
 
   if(gpsFix){
-    Serial.print("Latitud: ");
+    Serial.print(F("Latitud: "));
     printFloat(latitude, 5);
     Serial.println("");
 
-    Serial.print("Longitud: ");
+    Serial.print(F("Longitud: "));
     printFloat(longitude, 5);
     Serial.println("");
 
@@ -228,9 +292,49 @@ void sendSMS_SOS(){
     // Actualiza IoT
   }else if (!gpsFix){
     SOS_flag = 1;
-    Serial.println(F("Aun no hay GPSFIX, se reintentara de nuevo. "));
+    Serial.println(F("Aun no hay GPSFIX, se intentara de nuevo. "));
     char mensaje_txt[140];
-    strcpy(mensaje_txt, "SOS! Sin señal GPS. Ultima ubicacion: https://io.adafruit.com/andresg747/ BPM: XX Se notificara de inmediato cuando GPS este disponible.");
+    strcpy(mensaje_txt, "SOS! GPS no disponible. Ultima ubicacion: https://io.adafruit.com/andresg747/ BPM: XX Se notificara de inmediato cuando GPS este disponible.");
+    if(aux_Enviar_SMS){
+      if (!fona.sendSMS(sendto, mensaje_txt)) {
+        Serial.println(F("No se pudo enviar SMS"));
+      } else {
+        Serial.println(F("Mensaje enviado con exito!"));
+        aux_Enviar_SMS = 0;
+      }
+    }
+  }
+}
+
+// Envio Mensaje Previa solicitud STATUS
+void sendSMS_STATUS(){
+  // Lectura GPS
+  bool gpsFix = fona.getGPS(&latitude, &longitude, &speed_kph, &heading, &altitude);
+
+  if(gpsFix){
+    // Concateno mensaje con Latitud y Longitud
+    char mensaje_txt[140];
+    strcpy(mensaje_txt, "Ubicacion: https://maps.google.com/?q=");
+    dtostrf(latitude,6,5,&mensaje_txt[strlen(mensaje_txt)]);
+    strcat(mensaje_txt,",");
+    dtostrf(longitude,6,5,&mensaje_txt[strlen(mensaje_txt)]);
+    strcat(mensaje_txt," BPM: XX");
+
+    // Imprimo mensaje en serial
+    Serial.println(mensaje_txt);
+
+    //Envío mensaje
+    if (!fona.sendSMS(sendto, mensaje_txt)) {
+      Serial.println(F("No se pudo enviar SMS"));
+    } else {
+      Serial.println(F("Mensaje enviado con exito!"));
+      aux_Enviar_SMS = 0;
+    }
+    // Actualiza IoT
+  }else if (!gpsFix){
+    Serial.println(F("Aun no hay GPSFIX, se intentara de nuevo. "));
+    char mensaje_txt[140];
+    strcpy(mensaje_txt, "GPS no disponible. Ultima ubicacion: https://io.adafruit.com/andresg747/ BPM: XX Se notificara de inmediato cuando GPS este disponible.");
     if(aux_Enviar_SMS){
       if (!fona.sendSMS(sendto, mensaje_txt)) {
         Serial.println(F("No se pudo enviar SMS"));
@@ -247,11 +351,11 @@ void checkGPS(){
   bool gpsFix = fona.getGPS(&latitude, &longitude, &speed_kph, &heading, &altitude);
 
   if(gpsFix){
-    Serial.print("Latitud: ");
+    Serial.print(F("Latitud: "));
     printFloat(latitude, 5);
     Serial.println("");
 
-    Serial.print("Longitud: ");
+    Serial.print(F("Longitud: "));
     printFloat(longitude, 5);
     Serial.println("");
 
@@ -263,7 +367,7 @@ void checkGPS(){
     logLocation(latitude, longitude, altitude, location_feed);
 
   }else{
-    Serial.print("GPS No disponible.");
+    Serial.print(F("GPS No disponible."));
   }
 }
 
@@ -296,7 +400,7 @@ void printFloat(float value, int places) {
   int i;
   float tempfloat = value;
 
-    // make sure we round properly. this could use pow from <math.h>, but doesn't seem worth the import
+  // make sure we round properly. this could use pow from <math.h>, but doesn't seem worth the import
   // if this rounding step isn't here, the value  54.321 prints as 54.3209
 
   // calculate rounding term d:   0.5/pow(10,places)  
@@ -351,55 +455,6 @@ void printFloat(float value, int places) {
   }
 }
 
-// Calcula distancia entre dos puntos usando la formula Haversine: http://www.movable-type.co.uk/scripts/latlong.html
-float distanceCoordinates(float flat1, float flon1, float flat2, float flon2) {
-
-  // Variables
-  float dist_calc=0;
-  float dist_calc2=0;
-  float diflat=0;
-  float diflon=0;
-
-  // Calculations
-  diflat  = radians(flat2-flat1);
-  flat1 = radians(flat1);
-  flat2 = radians(flat2);
-  diflon = radians((flon2)-(flon1));
-
-  dist_calc = (sin(diflat/2.0)*sin(diflat/2.0));
-  dist_calc2 = cos(flat1);
-  dist_calc2*=cos(flat2);
-  dist_calc2*=sin(diflon/2.0);
-  dist_calc2*=sin(diflon/2.0);
-  dist_calc +=dist_calc2;
-
-  dist_calc=(2*atan2(sqrt(dist_calc),sqrt(1.0-dist_calc)));
-
-  dist_calc*=6371000.0; //Converting to meters
-
-  return dist_calc;
-}
-
-// Conexion MQTT
-void MQTT_connect() {
-  int8_t ret;
-
-  // Stop if already connected.
-  if (mqtt.connected()) {
-    return;
-  }
-
-  Serial.print("Connecting to MQTT... ");
-
-  while ((ret = mqtt.connect()) != 0) { // connect will return 0 for connected
-    Serial.println(mqtt.connectErrorString(ret));
-    Serial.println("Retrying MQTT connection in 5 seconds...");
-    mqtt.disconnect();
-    delay(5000);  // wait 5 seconds
-  }
-  Serial.println("MQTT Connected!");
-}
-
 // Log battery
 void logBatteryPercent(uint32_t indicator, Adafruit_MQTT_Publish& publishFeed) {
   // Publish
@@ -412,7 +467,6 @@ void logBatteryPercent(uint32_t indicator, Adafruit_MQTT_Publish& publishFeed) {
     Serial.println(F("Publish succeeded!"));
     txFailures = 0;
   }
-
 }
 
 // Serialize the lat, long, altitude to a CSV string that can be published to the specified feed.
@@ -447,3 +501,20 @@ void logLocation(float latitude, float longitude, float altitude, Adafruit_MQTT_
     txFailures = 0;
   }
 }
+
+void borrarSMS(){
+  smsnum = fona.getNumSMS();
+  Serial.print(F("Hay "));
+  Serial.print((smsnum));
+  Serial.println(F(" SMS's en la SIM CARD."));
+  if(smsnum > 0){
+    for (int n = 1; n <= smsnum; ++n)
+    {
+      Serial.println(F("Borrando Mensaje #: "));
+      Serial.println((n));
+      fona.deleteSMS(n);
+      delay(2000);
+    }
+  }
+}
+
