@@ -7,11 +7,16 @@
 #include "Adafruit_FONA.h"
 #include "Adafruit_MQTT.h"
 #include "Adafruit_MQTT_FONA.h"
+#include <Wire.h>
 
 // Variables
-const int ledPin = 6;
+int ledPin = 6;
+int blinkPin = 9;
 int buttonPin = 7;
 int current;        // Estado del botón, activo en bajo
+char bpm_chr = "";
+char buffer[3];
+int bpm = 0;
 long millis_held;   // Milisegundos transcurridos
 long secs_held;
 long prev_secs_held;
@@ -19,18 +24,15 @@ byte previous = HIGH;
 unsigned long firstTime;
 char replybuffer[30];
 byte SOS_flag=0; // Por si se intentó enviar SOS y aún no se tiene GPSFIX o nó se pudo enviar para reintentarlo
-int aux_Enviar_SMS = 0; // Por si ya se envió el primer mensaje diciendo que está disponible GPS
+byte aux_Enviar_SMS = 0;
+byte aux_Enviar_SMS_STATUS = 0;
+byte STATUS_flag = 0;
 char sendto[13]="+584245328127";
 uint16_t vbat;
 float latitude, longitude, speed_kph, heading, altitude;
 int smsnum; // Número de SMS en SIMCARD
 // Para lectura SMS comando
 char *numero;
-
-// Geofence
-// const float maxDistance = 100;
-// float homeLatitude;
-// float homeLongitude;
 
 #define quinceSeg (1000UL * 15) // Base rutina c/15 Seg
 #define unMin (1000UL * 60)  // Base rutina c/1 min
@@ -51,7 +53,7 @@ static unsigned long aux15 = 0 - quinceSeg;
 #define AIO_SERVER           "io.adafruit.com" 
 #define AIO_SERVERPORT       1883
 #define AIO_USERNAME         "andresg747"
-#define AIO_KEY              "534696f793e24e31b3b493ab709bf772"
+#define AIO_KEY              "90edb2e45d1c4837b71a4ac70e6c83bd"
 
 // #define MAX_TX_FAILURES      3  // Maximum number of publish failures in a row before resetting the whole sketch.
 
@@ -66,12 +68,16 @@ uint8_t txFailures = 0; // Cuantos publish fallidos consecutivos han ocurrido
 // Feeds
 Adafruit_MQTT_Publish location_feed = Adafruit_MQTT_Publish(&mqtt, AIO_USERNAME "/feeds/location/csv");
 Adafruit_MQTT_Publish battery_feed = Adafruit_MQTT_Publish(&mqtt, AIO_USERNAME "/feeds/battery");
+Adafruit_MQTT_Publish bpm_feed = Adafruit_MQTT_Publish(&mqtt, AIO_USERNAME "/feeds/bpm");
 
 void setup() {
-
+  pinMode(blinkPin, OUTPUT);        // pin that will blink to your heartbeat!
   pinMode(ledPin, OUTPUT);
   digitalWrite(buttonPin, HIGH);  // Enciende PullUp 
   digitalWrite(ledPin,LOW);
+
+  //Wire
+  Wire.begin();        // Inicializa comunicación I2C
 
   //Inicializa Puerto Serial y Conexión Módulo
   Serial.begin(115200);
@@ -108,15 +114,12 @@ void setup() {
   int8_t ret = mqtt.connect();
   if (ret != 0) {
     Serial.println(mqtt.connectErrorString(ret));
-    halt(F("No se pudo conectar a servidor MQTT..."));
+    Serial.println(F("No se pudo conectar a servidor MQTT..."));
   }
   Serial.println(F("MQTT Conectado!"));
 
   // Initial GPS read
   bool gpsFix = fona.getGPS(&latitude, &longitude, &speed_kph, &heading, &altitude);
-  // CASA -- 10.078431,-69.2805031
-  // homeLatitude = 10.078431L;
-  // homeLongitude = -69.2805031L;
 
   // Enable GPS.
   fona.enableGPS(true);
@@ -129,27 +132,27 @@ void setup() {
 
 void loop() {
   //MQTT_connect();
-
   checkbutton();
 
   if ((long)(millis() - aux60) >= unMin){
     aux60 += unMin;
     // ++++++++  Cada 60 seg
-    
     checkGPS();
     checkBattery();
 
   }else if((long)(millis() - aux15) >= quinceSeg){
     aux15 += quinceSeg;
     // ++++++++  Cada 15 seg
+    checkBPM();
     leerSMS();
-    //checkGPS();
-    //checkBattery();
   }
 
   //Veriicamos flag para envío de SMS Alerta
   if(SOS_flag == 1){
     sendSMS_SOS();
+  }
+  if(STATUS_flag){
+    sendSMS_STATUS();
   }
 
   delay(10);
@@ -188,24 +191,15 @@ void leerSMS(){
 
      // if (strcasecmp(replybuffer, ".STATUS") == 0) {
      if (mensaje.substring(0, 7) == ".STATUS") {
-      if(sender == sendto)
-        Serial.println(F("Comando Aceptado."));
-      else
-        Serial.println(F("NO es supervisor."));
        // Comando Status
       Serial.println(F("/////////////////////"));
       Serial.println(F("Solicita Status"));
-      aux_Enviar_SMS = 1;
+      aux_Enviar_SMS_STATUS = 1;
       sendSMS_STATUS();
      }
      // if (strcasecmp(replybuffer, ".NUMERO") == 0) {
      if (mensaje.substring(0, 7) == ".NUMERO") {
-             // Comando Cambiar Número
-      if(sender == sendto)
-        Serial.println(F("Comando Aceptado."));
-      else
-        Serial.println(F("NO es supervisor."));
-
+      // Comando Cambiar Número
       Serial.println(F("/////////////////////"));
       Serial.println(F("Cambiar Numero a: "));
       Serial.println(mensaje.substring(8,21));
@@ -262,11 +256,11 @@ void sendSMS_SOS(){
 
   if(gpsFix){
     Serial.print(F("Latitud: "));
-    printFloat(latitude, 5);
+    Serial.print(latitude, 5);
     Serial.println("");
 
     Serial.print(F("Longitud: "));
-    printFloat(longitude, 5);
+    Serial.print(longitude, 5);
     Serial.println("");
 
     // Concateno mensaje con Latitud y Longitud
@@ -275,7 +269,9 @@ void sendSMS_SOS(){
     dtostrf(latitude,6,5,&mensaje_txt[strlen(mensaje_txt)]);
     strcat(mensaje_txt,",");
     dtostrf(longitude,6,5,&mensaje_txt[strlen(mensaje_txt)]);
-    strcat(mensaje_txt," BPM: XX");
+    strcat(mensaje_txt," BPM: ");
+    sprintf(buffer, "%u", bpm);
+    strcat(mensaje_txt,buffer);
 
     // Imprimo mensaje en serial
     Serial.println(mensaje_txt);
@@ -292,9 +288,12 @@ void sendSMS_SOS(){
     // Actualiza IoT
   }else if (!gpsFix){
     SOS_flag = 1;
-    Serial.println(F("Aun no hay GPSFIX, se intentara de nuevo. "));
+    Serial.println(F("Para SMS-SOS Aun no hay GPSFIX, se intentara de nuevo. "));
     char mensaje_txt[140];
-    strcpy(mensaje_txt, "SOS! GPS no disponible. Ultima ubicacion: https://io.adafruit.com/andresg747/ BPM: XX Se notificara de inmediato cuando GPS este disponible.");
+    strcpy(mensaje_txt, "SOS! GPS no disponible. Ultima ubicacion: https://io.adafruit.com/andresg747/ Se notificara de inmediato cuando GPS este disponible. ");
+    strcat(mensaje_txt," BPM: ");
+    sprintf(buffer, "%u", bpm);
+    strcat(mensaje_txt,buffer);
     if(aux_Enviar_SMS){
       if (!fona.sendSMS(sendto, mensaje_txt)) {
         Serial.println(F("No se pudo enviar SMS"));
@@ -318,7 +317,9 @@ void sendSMS_STATUS(){
     dtostrf(latitude,6,5,&mensaje_txt[strlen(mensaje_txt)]);
     strcat(mensaje_txt,",");
     dtostrf(longitude,6,5,&mensaje_txt[strlen(mensaje_txt)]);
-    strcat(mensaje_txt," BPM: XX");
+    strcat(mensaje_txt," BPM: ");
+    sprintf(buffer, "%u", bpm);
+    strcat(mensaje_txt,buffer);
 
     // Imprimo mensaje en serial
     Serial.println(mensaje_txt);
@@ -328,19 +329,23 @@ void sendSMS_STATUS(){
       Serial.println(F("No se pudo enviar SMS"));
     } else {
       Serial.println(F("Mensaje enviado con exito!"));
-      aux_Enviar_SMS = 0;
+      STATUS_flag = 0;
     }
     // Actualiza IoT
   }else if (!gpsFix){
-    Serial.println(F("Aun no hay GPSFIX, se intentara de nuevo. "));
+    STATUS_flag = 1;
+    Serial.println(F("Para SMS-STATUS Aun no hay GPSFIX, se intentara de nuevo."));
     char mensaje_txt[140];
-    strcpy(mensaje_txt, "GPS no disponible. Ultima ubicacion: https://io.adafruit.com/andresg747/ BPM: XX Se notificara de inmediato cuando GPS este disponible.");
-    if(aux_Enviar_SMS){
+    strcpy(mensaje_txt, "GPS no disponible. Ultima ubicacion: https://io.adafruit.com/andresg747/ Se notificara de inmediato cuando GPS este disponible. ");
+    strcat(mensaje_txt," BPM: ");
+    sprintf(buffer, "%u", bpm);
+    strcat(mensaje_txt,buffer);
+    if(aux_Enviar_SMS_STATUS){
       if (!fona.sendSMS(sendto, mensaje_txt)) {
         Serial.println(F("No se pudo enviar SMS"));
       } else {
         Serial.println(F("Mensaje enviado con exito!"));
-        aux_Enviar_SMS = 0;
+        aux_Enviar_SMS_STATUS = 0;
       }
     }
   }
@@ -352,16 +357,12 @@ void checkGPS(){
 
   if(gpsFix){
     Serial.print(F("Latitud: "));
-    printFloat(latitude, 5);
+    Serial.print(latitude, 5);
     Serial.println("");
 
     Serial.print(F("Longitud: "));
-    printFloat(longitude, 5);
+    Serial.print(longitude, 5);
     Serial.println("");
-
-    // Calcula la distancia entre viejas y nuevas coordenadas
-    // ************ DESCOMENTA para continuar con GEOFENCING
-    //float distance = distanceCoordinates(latitude, longitude, homeLatitude, homeLongitude);
 
     // Actualiza IoT
     logLocation(latitude, longitude, altitude, location_feed);
@@ -377,7 +378,19 @@ void checkBattery(){
   } else {
     Serial.print(F("Porcentaje Bateria = ")); Serial.print(vbat); Serial.println(F("%"));
   }
-  logBatteryPercent(vbat, battery_feed);
+  log(vbat, battery_feed);
+}
+
+void checkBPM(){
+  Serial.println(F("Solicitando BPM"));
+  Wire.requestFrom(1, 1);     // request 1 bytes from slave device #1
+  while (Wire.available()) {  // slave may send less than requested
+    bpm_chr = Wire.read();      // receive a byte as character
+    bpm = (int)bpm_chr;
+    Serial.print("BPM: ");
+    Serial.println(bpm);          // print the int
+  }
+  log(bpm, bpm_feed);
 }
 
 // Manejo de errores
@@ -391,74 +404,10 @@ void halt(const __FlashStringHelper *error) {
   }
 }
 
-// Funcion específica para imprimir valores float en Serial con más precisión que la función nativa
-void printFloat(float value, int places) {
-  // this is used to cast digits 
-  int digit;
-  float tens = 0.1;
-  int tenscount = 0;
-  int i;
-  float tempfloat = value;
-
-  // make sure we round properly. this could use pow from <math.h>, but doesn't seem worth the import
-  // if this rounding step isn't here, the value  54.321 prints as 54.3209
-
-  // calculate rounding term d:   0.5/pow(10,places)  
-  float d = 0.5;
-  if (value < 0)
-    d *= -1.0;
-  // divide by ten for each decimal place
-  for (i = 0; i < places; i++)
-    d/= 10.0;    
-  // this small addition, combined with truncation will round our values properly 
-  tempfloat +=  d;
-
-  // first get value tens to be the large power of ten less than value
-  // tenscount isn't necessary but it would be useful if you wanted to know after this how many chars the number will take
-
-  if (value < 0)
-    tempfloat *= -1.0;
-  while ((tens * 10.0) <= tempfloat) {
-    tens *= 10.0;
-    tenscount += 1;
-  }
-
-
-  // write out the negative if needed
-  if (value < 0)
-    Serial.print('-');
-
-  if (tenscount == 0)
-    Serial.print(0, DEC);
-
-  for (i=0; i< tenscount; i++) {
-    digit = (int) (tempfloat/tens);
-    Serial.print(digit, DEC);
-    tempfloat = tempfloat - ((float)digit * tens);
-    tens /= 10.0;
-  }
-
-  // if no places after decimal, stop now and return
-  if (places <= 0)
-    return;
-
-  // otherwise, write the point and continue on
-  Serial.print('.');  
-
-  // now write out each decimal place by shifting digits one by one into the ones place and writing the truncated value
-  for (i = 0; i < places; i++) {
-    tempfloat *= 10.0; 
-    digit = (int) tempfloat;
-    Serial.print(digit,DEC);  
-    // once written, subtract off that digit
-    tempfloat = tempfloat - (float) digit; 
-  }
-}
-
 // Log battery
-void logBatteryPercent(uint32_t indicator, Adafruit_MQTT_Publish& publishFeed) {
+void log(uint32_t indicator, Adafruit_MQTT_Publish& publishFeed) {
   // Publish
-  Serial.print(F("Publicando Porcentaje Bateria: ")); Serial.println(indicator);
+  Serial.print(F("Publicando ")); Serial.println(indicator);
   if (!publishFeed.publish(indicator)) {
     Serial.println(F("Publish failed!"));
     txFailures++;
