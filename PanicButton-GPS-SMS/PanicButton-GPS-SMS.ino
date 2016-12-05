@@ -10,29 +10,34 @@
 #include <Wire.h>
 
 // Variables
-int ledPin = 6;
+int ledPin = 7;
 int blinkPin = 9;
-int buttonPin = 7;
+int buttonPin = 6;
 int current;        // Estado del botón, activo en bajo
 char bpm_chr = "";
-char buffer[3];
 int bpm = 0;
+char bpm_string[3];
 long millis_held;   // Milisegundos transcurridos
 long secs_held;
 long prev_secs_held;
 byte previous = HIGH;
 unsigned long firstTime;
-char replybuffer[30];
+char replybuffer[100];
 byte SOS_flag=0; // Por si se intentó enviar SOS y aún no se tiene GPSFIX o nó se pudo enviar para reintentarlo
 byte aux_Enviar_SMS = 0;
 byte aux_Enviar_SMS_STATUS = 0;
 byte STATUS_flag = 0;
-char sendto[13]="+584245328127";
 uint16_t vbat;
 float latitude, longitude, speed_kph, heading, altitude;
 int smsnum; // Número de SMS en SIMCARD
 // Para lectura SMS comando
-char *numero;
+char *num1 ="+584245328127";
+char *num2;
+char *num3;
+char *num4;
+char *num5;
+char mensaje_txt[160];
+char sender[13];
 
 #define quinceSeg (1000UL * 15) // Base rutina c/15 Seg
 #define unMin (1000UL * 60)  // Base rutina c/1 min
@@ -42,7 +47,7 @@ static unsigned long aux15 = 0 - quinceSeg;
 // FONA pins
 #define FONA_RX              11   // FONA serial RX pin.
 #define FONA_TX              10   // FONA serial TX pin.
-#define FONA_RST             4   // FONA reset pin
+#define FONA_RST             5   // FONA reset pin
 
 // FONA GPRS
 #define FONA_APN             "internet.movistar.ve"
@@ -53,7 +58,7 @@ static unsigned long aux15 = 0 - quinceSeg;
 #define AIO_SERVER           "io.adafruit.com" 
 #define AIO_SERVERPORT       1883
 #define AIO_USERNAME         "andresg747"
-#define AIO_KEY              "90edb2e45d1c4837b71a4ac70e6c83bd"
+#define AIO_KEY              "775d7bcfc4524333b664b941f3d82a1e"
 
 // #define MAX_TX_FAILURES      3  // Maximum number of publish failures in a row before resetting the whole sketch.
 
@@ -145,14 +150,14 @@ void loop() {
     // ++++++++  Cada 15 seg
     checkBPM();
     leerSMS();
-  }
 
-  //Veriicamos flag para envío de SMS Alerta
-  if(SOS_flag == 1){
-    sendSMS_SOS();
-  }
-  if(STATUS_flag){
-    sendSMS_STATUS();
+    //Veriicamos flag para envío de SMS Alerta
+    if(SOS_flag == 1){
+      sendSMS_SOS();
+    }
+    if(STATUS_flag){
+      sendSMS_STATUS();
+    }
   }
 
   delay(10);
@@ -165,7 +170,6 @@ void leerSMS(){
     uint8_t n = 1; 
     while (true) {
       uint16_t smslen;
-      char sender[13];
 
       Serial.print(F("\n\rReading SMS #")); Serial.println(n);
      uint8_t len = fona.readSMS(n, replybuffer, 250, &smslen); // pass in buffer and max len!
@@ -180,13 +184,12 @@ void leerSMS(){
        // failed to get the sender?
       sender[0] = 0;
      }
-     
+
      Serial.print(F("***** SMS #")); Serial.print(n);
      Serial.print(" ("); Serial.print(len); Serial.println(F(") bytes *****"));
      Serial.println(replybuffer);
      Serial.print(F("From: ")); Serial.println(sender);
      Serial.println(F("*****"));
-
      String mensaje = replybuffer;
 
      // if (strcasecmp(replybuffer, ".STATUS") == 0) {
@@ -200,12 +203,47 @@ void leerSMS(){
      // if (strcasecmp(replybuffer, ".NUMERO") == 0) {
      if (mensaje.substring(0, 7) == ".NUMERO") {
       // Comando Cambiar Número
-      Serial.println(F("/////////////////////"));
-      Serial.println(F("Cambiar Numero a: "));
-      Serial.println(mensaje.substring(8,21));
+      Serial.println(F("Comenzando parsing..."));
+
+      delay(500);
+      char *token;
+      token = strtok(replybuffer,",");
+      if (token == NULL){
+        Serial.println(F("No hay tokens."));
+        break;
+      }
+      num1 = token;
+      strncpy(num1,num1+8,14);
+      Serial.print("Numero 1: ");
+      Serial.println(num1);
+      delay(500);
+
+      token = strtok(NULL,",");
+      num2 = token;
+      Serial.print("Numero 2: ");
+      Serial.println(num2);
+      delay(500);
+
+      token = strtok(NULL,",");
+      num3 = token;
+      Serial.print("Numero 3: ");
+      Serial.println(num3);
+      delay(500);
+
+      token = strtok(NULL,",");
+      num4 = token;
+      Serial.print("Numero 4: ");
+      Serial.println(num4);
+      delay(500);
+
+      token = strtok(NULL,",");
+      num5 = token;
+      Serial.print("Numero 5: ");
+      Serial.println(num5);
+      delay(1000);
      }
-     
-     delay(3000);
+
+     delay(2000);
      break;
    } 
    borrarSMS(); 
@@ -264,42 +302,114 @@ void sendSMS_SOS(){
     Serial.println("");
 
     // Concateno mensaje con Latitud y Longitud
-    char mensaje_txt[140];
     strcpy(mensaje_txt, "SOS! Ubicacion: https://maps.google.com/?q=");
     dtostrf(latitude,6,5,&mensaje_txt[strlen(mensaje_txt)]);
     strcat(mensaje_txt,",");
     dtostrf(longitude,6,5,&mensaje_txt[strlen(mensaje_txt)]);
-    strcat(mensaje_txt," BPM: ");
-    sprintf(buffer, "%u", bpm);
-    strcat(mensaje_txt,buffer);
+    if(bpm == 0){
+      strcat(mensaje_txt," BPM no disponible.");
+    }else{
+      sprintf(bpm_string, "%d", bpm);
+      strcat(mensaje_txt," BPM: ");
+      strcat(mensaje_txt,bpm_string);
+      strcat(mensaje_txt," ");
+    }
 
     // Imprimo mensaje en serial
     Serial.println(mensaje_txt);
 
-    //Envío mensaje
-    if (!fona.sendSMS(sendto, mensaje_txt)) {
-      Serial.println(F("No se pudo enviar SMS"));
-      SOS_flag = 1;
-    } else {
-      Serial.println(F("Mensaje enviado con exito!"));
-      SOS_flag = 0;
-      aux_Enviar_SMS = 0;
+    // Enviar mensaje a todos
+    if (strlen(num1) > 1){
+      if (!fona.sendSMS(num1, mensaje_txt)) {
+        Serial.println(F("No se pudo enviar SMS"));
+        SOS_flag = 1;
+      } else {
+        Serial.println(F("Mensaje enviado con exito!"));
+        SOS_flag = 0;
+        aux_Enviar_SMS = 0;
+      }
     }
-    // Actualiza IoT
-  }else if (!gpsFix){
-    SOS_flag = 1;
-    Serial.println(F("Para SMS-SOS Aun no hay GPSFIX, se intentara de nuevo. "));
-    char mensaje_txt[140];
-    strcpy(mensaje_txt, "SOS! GPS no disponible. Ultima ubicacion: https://io.adafruit.com/andresg747/ Se notificara de inmediato cuando GPS este disponible. ");
-    strcat(mensaje_txt," BPM: ");
-    sprintf(buffer, "%u", bpm);
-    strcat(mensaje_txt,buffer);
-    if(aux_Enviar_SMS){
-      if (!fona.sendSMS(sendto, mensaje_txt)) {
+    if (strlen(num2) > 1){
+      if (!fona.sendSMS(num2, mensaje_txt)) {
         Serial.println(F("No se pudo enviar SMS"));
       } else {
         Serial.println(F("Mensaje enviado con exito!"));
-        aux_Enviar_SMS = 0;
+      }
+    }
+    if (strlen(num3) > 1){
+      if (!fona.sendSMS(num3, mensaje_txt)) {
+        Serial.println(F("No se pudo enviar SMS"));
+      } else {
+        Serial.println(F("Mensaje enviado con exito!"));
+      }
+    }
+    if (strlen(num4) > 1){
+      if (!fona.sendSMS(num4, mensaje_txt)) {
+        Serial.println(F("No se pudo enviar SMS"));
+      } else {
+        Serial.println(F("Mensaje enviado con exito!"));
+      }
+    }
+    if (strlen(num5) > 1){
+      if (!fona.sendSMS(num5, mensaje_txt)) {
+        Serial.println(F("No se pudo enviar SMS"));
+      } else {
+        Serial.println(F("Mensaje enviado con exito!"));
+      }
+    }
+
+    // Actualiza IoT
+  }else if (!gpsFix){
+
+    SOS_flag = 1;
+    Serial.println(F("Para SMS-SOS Aun no hay GPSFIX, se intentara de nuevo. "));
+    if(aux_Enviar_SMS){
+      Serial.println("Creando nuevo mensaje");delay(100);
+      strcpy(mensaje_txt, "SOS! GPS no disponible. Ultima ubicacion: https://io.adafruit.com/andresg747/ Se notificara cuando GPS este disponible. ");
+      if(bpm == 0){
+        strcat(mensaje_txt," BPM no disponible.");
+      }else{
+        sprintf(bpm_string, "%d", bpm);
+        strcat(mensaje_txt," BPM: ");
+        strcat(mensaje_txt,bpm_string);
+        strcat(mensaje_txt," ");
+      }
+      // Enviar a todos los números:
+      if (strlen(num1) > 1){
+        if (!fona.sendSMS(num1, mensaje_txt)) {
+          Serial.println(F("No se pudo enviar SMS"));
+        } else {
+          Serial.println(F("Mensaje enviado con exito!"));
+          aux_Enviar_SMS = 0;
+        }
+      }
+      if (strlen(num2) > 2){
+        if (!fona.sendSMS(num2, mensaje_txt)) {
+          Serial.println(F("No se pudo enviar SMS"));
+        } else {
+          Serial.println(F("Mensaje enviado con exito!"));
+        }
+      }
+      if (strlen(num3) > 2){
+        if (!fona.sendSMS(num3, mensaje_txt)) {
+          Serial.println(F("No se pudo enviar SMS"));
+        } else {
+          Serial.println(F("Mensaje enviado con exito!"));
+        }
+      }
+      if (strlen(num4) > 2){
+        if (!fona.sendSMS(num4, mensaje_txt)) {
+          Serial.println(F("No se pudo enviar SMS"));
+        } else {
+          Serial.println(F("Mensaje enviado con exito!"));
+        }
+      }
+      if (strlen(num5) > 2){
+        if (!fona.sendSMS(num5, mensaje_txt)) {
+          Serial.println(F("No se pudo enviar SMS"));
+        } else {
+          Serial.println(F("Mensaje enviado con exito!"));
+        }
       }
     }
   }
@@ -312,41 +422,53 @@ void sendSMS_STATUS(){
 
   if(gpsFix){
     // Concateno mensaje con Latitud y Longitud
-    char mensaje_txt[140];
     strcpy(mensaje_txt, "Ubicacion: https://maps.google.com/?q=");
     dtostrf(latitude,6,5,&mensaje_txt[strlen(mensaje_txt)]);
     strcat(mensaje_txt,",");
     dtostrf(longitude,6,5,&mensaje_txt[strlen(mensaje_txt)]);
-    strcat(mensaje_txt," BPM: ");
-    sprintf(buffer, "%u", bpm);
-    strcat(mensaje_txt,buffer);
+    if(bpm == 0){
+      strcat(mensaje_txt," BPM no disponible.");
+    }else{
+      sprintf(bpm_string, "%d", bpm);
+      strcat(mensaje_txt," BPM: ");
+      strcat(mensaje_txt,bpm_string);
+      strcat(mensaje_txt," ");
+    }
 
     // Imprimo mensaje en serial
     Serial.println(mensaje_txt);
 
     //Envío mensaje
-    if (!fona.sendSMS(sendto, mensaje_txt)) {
+
+    if (!fona.sendSMS(sender, mensaje_txt)) {
       Serial.println(F("No se pudo enviar SMS"));
     } else {
       Serial.println(F("Mensaje enviado con exito!"));
       STATUS_flag = 0;
     }
+
     // Actualiza IoT
   }else if (!gpsFix){
     STATUS_flag = 1;
     Serial.println(F("Para SMS-STATUS Aun no hay GPSFIX, se intentara de nuevo."));
-    char mensaje_txt[140];
-    strcpy(mensaje_txt, "GPS no disponible. Ultima ubicacion: https://io.adafruit.com/andresg747/ Se notificara de inmediato cuando GPS este disponible. ");
-    strcat(mensaje_txt," BPM: ");
-    sprintf(buffer, "%u", bpm);
-    strcat(mensaje_txt,buffer);
     if(aux_Enviar_SMS_STATUS){
-      if (!fona.sendSMS(sendto, mensaje_txt)) {
+      strcpy(mensaje_txt, "GPS no disponible. Ultima ubicacion: https://io.adafruit.com/andresg747/ Se notificara de inmediato cuando GPS este disponible. ");
+      if(bpm == 0){
+        strcat(mensaje_txt," BPM no disponible.");
+      }else{
+        sprintf(bpm_string, "%d", bpm);
+        strcat(mensaje_txt," BPM: ");
+        strcat(mensaje_txt,bpm_string);
+        strcat(mensaje_txt," ");
+      }
+
+      if (!fona.sendSMS(sender, mensaje_txt)) {
         Serial.println(F("No se pudo enviar SMS"));
       } else {
         Serial.println(F("Mensaje enviado con exito!"));
         aux_Enviar_SMS_STATUS = 0;
       }
+
     }
   }
 }
@@ -368,7 +490,7 @@ void checkGPS(){
     logLocation(latitude, longitude, altitude, location_feed);
 
   }else{
-    Serial.print(F("GPS No disponible."));
+    Serial.println(F("GPS No disponible."));
   }
 }
 
@@ -383,14 +505,19 @@ void checkBattery(){
 
 void checkBPM(){
   Serial.println(F("Solicitando BPM"));
-  Wire.requestFrom(1, 1);     // request 1 bytes from slave device #1
-  while (Wire.available()) {  // slave may send less than requested
-    bpm_chr = Wire.read();      // receive a byte as character
+  Wire.requestFrom(1, 1);     // Solicita 1 byte de dispositivo esclavo #1
+  while (Wire.available()) {
+    bpm_chr = Wire.read();
     bpm = (int)bpm_chr;
-    Serial.print("BPM: ");
-    Serial.println(bpm);          // print the int
+    if(bpm > 165 || bpm < 35){
+      Serial.println("BPM: No Disponible.");
+      bpm = 0;
+    }else{
+      Serial.print("BPM: ");
+      Serial.println(bpm);
+      log(bpm, bpm_feed);
+    }
   }
-  log(bpm, bpm_feed);
 }
 
 // Manejo de errores
